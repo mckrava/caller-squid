@@ -6,13 +6,12 @@ import {
   ParsedEventsDataMap,
   ParsedChainData
 } from './types';
-
+import { getConfig } from '../config';
 import * as ss58 from '@subsquid/ss58';
-import { decodeHex } from '@subsquid/util-internal-hex';
-import { processorConfig } from '../config';
-import { Block } from '../processor';
+import { decodeHex, toHex } from '@subsquid/util-internal-hex';
+import assert from 'assert';
 
-const ss58codec = ss58.codec(processorConfig.prefix);
+const chainConfig = getConfig();
 
 export class ParsedChainDataScope {
   private scope: ParsedEventsDataMap;
@@ -29,11 +28,78 @@ export class ParsedChainDataScope {
     return (this.scope.get(section) as Set<T>) || new Set<T>();
   }
 }
-//
-// export function encodeAccount(id: Uint8Array) {
-//   return ss58codec.encode(typeof id === 'string' ? decodeHex(id) : id);
-// }
-//
-// export function decodeAccount(id: string) {
-//   return ss58codec.decode(id);
-// }
+
+export function encodeAccount(
+  id: Uint8Array | string | null,
+  prefix?: string | number | undefined
+) {
+  assert(id, 'Cannot encode public key with value null.');
+  if (typeof id === 'string' && !!prefix) {
+    return ss58.codec(prefix).encode(decodeHex(id));
+  } else if (typeof id === 'string' && !prefix) {
+    return id;
+  } else if (typeof id !== 'string' && !prefix) {
+    return toHex(id);
+  } else if (typeof id !== 'string' && !!prefix) {
+    return ss58.codec(prefix).encode(id);
+  }
+  return id.toString();
+}
+
+export function decodeAccount(
+  id: string,
+  prefix?: string | number | undefined
+) {
+  return prefix != null ? ss58.codec(prefix).decode(id) : decodeHex(id);
+}
+
+function parseArgsHelper(srcNode: any, res: Set<string>): void {
+  if (!srcNode) return;
+
+  const handleVertex = (val: any) => {
+    if (ArrayBuffer.isView(val) && val.constructor.name === 'Uint8Array') {
+      const tr = toHex(val as Uint8Array);
+      if (tr.length < chainConfig.argsStringMaxLengthLimit) res.add(tr);
+      return;
+    }
+    if (ArrayBuffer.isView(val) && val.constructor.name !== 'Uint8Array') {
+      const tr = val.toString();
+      if (tr.length < chainConfig.argsStringMaxLengthLimit) res.add(tr);
+      return;
+    }
+
+    switch (typeof val) {
+      case 'string':
+        if (
+          val.length > 0 &&
+          val.length < chainConfig.argsStringMaxLengthLimit
+        ) {
+          res.add(val);
+        }
+        break;
+      case 'number':
+      case 'bigint':
+        res.add((<any>val).toString());
+        break;
+    }
+  };
+
+  if (
+    Array.isArray(srcNode) ||
+    (!Array.isArray(srcNode) &&
+      !ArrayBuffer.isView(srcNode) &&
+      typeof srcNode === 'object')
+  ) {
+    // It's array or object
+    for (const key in srcNode) parseArgsHelper(srcNode[key], res);
+  } else {
+    // It's primitive value
+    handleVertex(srcNode);
+  }
+}
+
+export function getParsedArgs(srcArgs: any): string[] {
+  let result: Set<string> = new Set();
+  parseArgsHelper(srcArgs, result);
+  return [...result.values()];
+}
